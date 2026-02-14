@@ -37,11 +37,14 @@ final class OpenAIProvider implements ProviderInterface
 {
     private const API_URL = 'https://api.openai.com/v1/chat/completions';
 
+    public const MODEL_GPT_4_5 = 'gpt-4.5-preview';
     public const MODEL_GPT_4O = 'gpt-4o';
     public const MODEL_GPT_4O_MINI = 'gpt-4o-mini';
     public const MODEL_GPT_4_TURBO = 'gpt-4-turbo';
+    public const MODEL_O1 = 'o1';
     public const MODEL_O1_PREVIEW = 'o1-preview';
     public const MODEL_O1_MINI = 'o1-mini';
+    public const MODEL_O3_MINI = 'o3-mini';
 
     public function __construct(
         private readonly string $apiKey,
