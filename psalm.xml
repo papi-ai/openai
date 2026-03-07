@@ -16,11 +16,4 @@
         </ignoreFiles>
     </projectFiles>
 
-    <issueHandlers>
-        <MissingOverrideAttribute>
-            <errorLevel type="suppress">
-                <directory name="src" />
-            </errorLevel>
-        </MissingOverrideAttribute>
-    </issueHandlers>
 </psalm>

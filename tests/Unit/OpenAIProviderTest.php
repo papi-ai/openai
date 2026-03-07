@@ -12,7 +12,9 @@
 
 declare(strict_types=1);
 
+use PapiAI\Core\Contracts\EmbeddingProviderInterface;
 use PapiAI\Core\Contracts\ProviderInterface;
+use PapiAI\Core\EmbeddingResponse;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\StreamChunk;
@@ -25,7 +27,9 @@ use PapiAI\OpenAI\OpenAIProvider;
 class TestableOpenAIProvider extends OpenAIProvider
 {
     public array $lastPayload = [];
+    public array $lastEmbeddingPayload = [];
     public array $fakeResponse = [];
+    public array $fakeEmbeddingResponse = [];
     public array $fakeStreamEvents = [];
 
     protected function request(array $payload): array
@@ -33,6 +37,13 @@ class TestableOpenAIProvider extends OpenAIProvider
         $this->lastPayload = $payload;
 
         return $this->fakeResponse;
+    }
+
+    protected function embeddingRequest(array $payload): array
+    {
+        $this->lastEmbeddingPayload = $payload;
+
+        return $this->fakeEmbeddingResponse;
     }
 
     protected function streamRequest(array $payload): Generator
@@ -355,6 +366,119 @@ describe('OpenAIProvider', function () {
                     'schema' => $schema,
                 ],
             ]);
+        });
+    });
+
+    describe('embed', function () {
+        it('implements EmbeddingProviderInterface', function () {
+            expect($this->provider)->toBeInstanceOf(EmbeddingProviderInterface::class);
+        });
+
+        it('embeds a single string input', function () {
+            $this->provider->fakeEmbeddingResponse = [
+                'data' => [
+                    ['embedding' => [0.1, 0.2, 0.3], 'index' => 0],
+                ],
+                'model' => 'text-embedding-3-small',
+                'usage' => ['prompt_tokens' => 5, 'total_tokens' => 5],
+            ];
+
+            $response = $this->provider->embed('Hello world');
+
+            expect($response)->toBeInstanceOf(EmbeddingResponse::class);
+            expect($response->embeddings)->toBe([[0.1, 0.2, 0.3]]);
+            expect($response->model)->toBe('text-embedding-3-small');
+            expect($this->provider->lastEmbeddingPayload['input'])->toBe(['Hello world']);
+        });
+
+        it('embeds an array of inputs', function () {
+            $this->provider->fakeEmbeddingResponse = [
+                'data' => [
+                    ['embedding' => [0.1, 0.2], 'index' => 0],
+                    ['embedding' => [0.3, 0.4], 'index' => 1],
+                ],
+                'model' => 'text-embedding-3-small',
+                'usage' => ['prompt_tokens' => 10, 'total_tokens' => 10],
+            ];
+
+            $response = $this->provider->embed(['Hello', 'World']);
+
+            expect($response->embeddings)->toBe([[0.1, 0.2], [0.3, 0.4]]);
+            expect($response->count())->toBe(2);
+            expect($this->provider->lastEmbeddingPayload['input'])->toBe(['Hello', 'World']);
+        });
+
+        it('uses custom model', function () {
+            $this->provider->fakeEmbeddingResponse = [
+                'data' => [
+                    ['embedding' => [0.1], 'index' => 0],
+                ],
+                'model' => 'text-embedding-3-large',
+                'usage' => ['prompt_tokens' => 5, 'total_tokens' => 5],
+            ];
+
+            $response = $this->provider->embed('Hello', ['model' => 'text-embedding-3-large']);
+
+            expect($this->provider->lastEmbeddingPayload['model'])->toBe('text-embedding-3-large');
+            expect($response->model)->toBe('text-embedding-3-large');
+        });
+
+        it('passes custom dimensions', function () {
+            $this->provider->fakeEmbeddingResponse = [
+                'data' => [
+                    ['embedding' => [0.1, 0.2], 'index' => 0],
+                ],
+                'model' => 'text-embedding-3-small',
+                'usage' => ['prompt_tokens' => 5, 'total_tokens' => 5],
+            ];
+
+            $this->provider->embed('Hello', ['dimensions' => 256]);
+
+            expect($this->provider->lastEmbeddingPayload['dimensions'])->toBe(256);
+        });
+
+        it('does not include dimensions when not specified', function () {
+            $this->provider->fakeEmbeddingResponse = [
+                'data' => [
+                    ['embedding' => [0.1], 'index' => 0],
+                ],
+                'model' => 'text-embedding-3-small',
+                'usage' => ['prompt_tokens' => 5, 'total_tokens' => 5],
+            ];
+
+            $this->provider->embed('Hello');
+
+            expect($this->provider->lastEmbeddingPayload)->not->toHaveKey('dimensions');
+        });
+
+        it('parses usage from response', function () {
+            $this->provider->fakeEmbeddingResponse = [
+                'data' => [
+                    ['embedding' => [0.1, 0.2, 0.3], 'index' => 0],
+                ],
+                'model' => 'text-embedding-3-small',
+                'usage' => ['prompt_tokens' => 8, 'total_tokens' => 8],
+            ];
+
+            $response = $this->provider->embed('Hello world');
+
+            expect($response->usage)->toBe(['prompt_tokens' => 8, 'total_tokens' => 8]);
+            expect($response->getPromptTokens())->toBe(8);
+            expect($response->getTotalTokens())->toBe(8);
+        });
+
+        it('defaults to text-embedding-3-small model', function () {
+            $this->provider->fakeEmbeddingResponse = [
+                'data' => [
+                    ['embedding' => [0.1], 'index' => 0],
+                ],
+                'model' => 'text-embedding-3-small',
+                'usage' => ['prompt_tokens' => 5, 'total_tokens' => 5],
+            ];
+
+            $this->provider->embed('Hello');
+
+            expect($this->provider->lastEmbeddingPayload['model'])->toBe('text-embedding-3-small');
         });
     });
 

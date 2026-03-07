@@ -15,7 +15,9 @@ declare(strict_types=1);
 namespace PapiAI\OpenAI;
 
 use Generator;
+use PapiAI\Core\Contracts\EmbeddingProviderInterface;
 use PapiAI\Core\Contracts\ProviderInterface;
+use PapiAI\Core\EmbeddingResponse;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
@@ -33,9 +35,10 @@ use RuntimeException;
  * - o1-preview (reasoning)
  * - o1-mini (fast reasoning)
  */
-class OpenAIProvider implements ProviderInterface
+class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface
 {
     private const API_URL = 'https://api.openai.com/v1/chat/completions';
+    private const EMBEDDINGS_API_URL = 'https://api.openai.com/v1/embeddings';
 
     public const MODEL_GPT_4_5 = 'gpt-4.5-preview';
     public const MODEL_GPT_4O = 'gpt-4o';
@@ -90,6 +93,32 @@ class OpenAIProvider implements ProviderInterface
     public function supportsStructuredOutput(): bool
     {
         return true;
+    }
+
+    public function embed(string|array $input, array $options = []): EmbeddingResponse
+    {
+        $model = $options['model'] ?? 'text-embedding-3-small';
+        $payload = [
+            'model' => $model,
+            'input' => is_array($input) ? $input : [$input],
+        ];
+
+        if (isset($options['dimensions'])) {
+            $payload['dimensions'] = $options['dimensions'];
+        }
+
+        $response = $this->embeddingRequest($payload);
+
+        $embeddings = array_map(
+            fn (array $item) => $item['embedding'],
+            $response['data']
+        );
+
+        return new EmbeddingResponse(
+            embeddings: $embeddings,
+            model: $response['model'] ?? $model,
+            usage: $response['usage'] ?? [],
+        );
     }
 
     public function getName(): string
@@ -279,6 +308,43 @@ class OpenAIProvider implements ProviderInterface
         if ($httpCode >= 400) {
             $errorMessage = $data['error']['message'] ?? 'Unknown error';
             throw new RuntimeException("OpenAI API error ({$httpCode}): {$errorMessage}");
+        }
+
+        return $data;
+    }
+
+    /**
+     * Make an embedding API request.
+     */
+    protected function embeddingRequest(array $payload): array
+    {
+        $ch = curl_init(self::EMBEDDINGS_API_URL);
+
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $this->apiKey,
+            ],
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+
+        curl_close($ch);
+
+        if ($error !== '') {
+            throw new RuntimeException("OpenAI Embeddings API request failed: {$error}");
+        }
+
+        $data = json_decode($response, true);
+
+        if ($httpCode >= 400) {
+            $errorMessage = $data['error']['message'] ?? 'Unknown error';
+            throw new RuntimeException("OpenAI Embeddings API error ({$httpCode}): {$errorMessage}");
         }
 
         return $data;
