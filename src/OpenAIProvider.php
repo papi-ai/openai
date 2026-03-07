@@ -15,18 +15,14 @@ declare(strict_types=1);
 namespace PapiAI\OpenAI;
 
 use Generator;
-use PapiAI\Core\AudioResponse;
 use PapiAI\Core\Contracts\EmbeddingProviderInterface;
 use PapiAI\Core\Contracts\ProviderInterface;
-use PapiAI\Core\Contracts\TextToSpeechProviderInterface;
-use PapiAI\Core\Contracts\TranscriptionProviderInterface;
 use PapiAI\Core\EmbeddingResponse;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
-use PapiAI\Core\TranscriptionResponse;
 use RuntimeException;
 
 /**
@@ -39,12 +35,10 @@ use RuntimeException;
  * - o1-preview (reasoning)
  * - o1-mini (fast reasoning)
  */
-class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, TextToSpeechProviderInterface, TranscriptionProviderInterface
+class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface
 {
     private const API_URL = 'https://api.openai.com/v1/chat/completions';
     private const EMBEDDINGS_API_URL = 'https://api.openai.com/v1/embeddings';
-    private const AUDIO_SPEECH_API_URL = 'https://api.openai.com/v1/audio/speech';
-    private const AUDIO_TRANSCRIPTIONS_API_URL = 'https://api.openai.com/v1/audio/transcriptions';
 
     public const MODEL_GPT_4_5 = 'gpt-4.5-preview';
     public const MODEL_GPT_4O = 'gpt-4o';
@@ -62,7 +56,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     ) {
     }
 
-    #[\Override]
     public function chat(array $messages, array $options = []): Response
     {
         $payload = $this->buildPayload($messages, $options);
@@ -71,7 +64,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         return Response::fromOpenAI($response, $messages);
     }
 
-    #[\Override]
     public function stream(array $messages, array $options = []): iterable
     {
         $payload = $this->buildPayload($messages, $options);
@@ -88,25 +80,21 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         }
     }
 
-    #[\Override]
     public function supportsTool(): bool
     {
         return true;
     }
 
-    #[\Override]
     public function supportsVision(): bool
     {
         return true;
     }
 
-    #[\Override]
     public function supportsStructuredOutput(): bool
     {
         return true;
     }
 
-    #[\Override]
     public function embed(string|array $input, array $options = []): EmbeddingResponse
     {
         $model = $options['model'] ?? 'text-embedding-3-small';
@@ -133,73 +121,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         );
     }
 
-    #[\Override]
-    public function synthesize(string $text, array $options = []): AudioResponse
-    {
-        $format = $options['format'] ?? 'mp3';
-        $model = $options['model'] ?? 'tts-1';
-
-        $payload = [
-            'model' => $model,
-            'input' => $text,
-            'voice' => $options['voice'] ?? 'alloy',
-            'response_format' => $format,
-            'speed' => $options['speed'] ?? 1.0,
-        ];
-
-        if (isset($options['instructions'])) {
-            $payload['instructions'] = $options['instructions'];
-        }
-
-        $data = $this->audioRequest($payload);
-
-        return new AudioResponse(
-            data: $data,
-            format: $format,
-            model: $model,
-        );
-    }
-
-    #[\Override]
-    public function transcribe(string $audioPath, array $options = []): TranscriptionResponse
-    {
-        $model = $options['model'] ?? 'whisper-1';
-
-        $fields = [
-            'model' => $model,
-            'response_format' => 'verbose_json',
-            'timestamp_granularities[]' => 'segment',
-        ];
-
-        if (isset($options['language'])) {
-            $fields['language'] = $options['language'];
-        }
-
-        if (isset($options['prompt'])) {
-            $fields['prompt'] = $options['prompt'];
-        }
-
-        $response = $this->transcriptionRequest($audioPath, $fields);
-
-        $segments = array_map(
-            fn (array $segment) => [
-                'start' => (float) $segment['start'],
-                'end' => (float) $segment['end'],
-                'text' => $segment['text'],
-            ],
-            $response['segments'] ?? [],
-        );
-
-        return new TranscriptionResponse(
-            text: $response['text'],
-            model: $model,
-            language: $response['language'] ?? null,
-            duration: isset($response['duration']) ? (float) $response['duration'] : null,
-            segments: $segments,
-        );
-    }
-
-    #[\Override]
     public function getName(): string
     {
         return 'openai';
@@ -357,8 +278,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 
     /**
      * Make an API request.
-     *
-     * @codeCoverageIgnore
      */
     protected function request(array $payload): array
     {
@@ -396,8 +315,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 
     /**
      * Make an embedding API request.
-     *
-     * @codeCoverageIgnore
      */
     protected function embeddingRequest(array $payload): array
     {
@@ -435,8 +352,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 
     /**
      * Make a streaming API request.
-     *
-     * @codeCoverageIgnore
      *
      * @return Generator<array>
      */
@@ -477,88 +392,5 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
                 }
             }
         }
-    }
-
-    /**
-     * Make an audio speech API request.
-     *
-     * Returns raw audio bytes.
-     *
-     * @codeCoverageIgnore
-     */
-    protected function audioRequest(array $payload): string
-    {
-        $ch = curl_init(self::AUDIO_SPEECH_API_URL);
-
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
-        ]);
-
-        /** @var string $response */
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-
-        curl_close($ch);
-
-        if ($error !== '') {
-            throw new RuntimeException("OpenAI Audio API request failed: {$error}");
-        }
-
-        if ($httpCode >= 400) {
-            $data = json_decode($response, true);
-            $errorMessage = $data['error']['message'] ?? 'Unknown error';
-            throw new RuntimeException("OpenAI Audio API error ({$httpCode}): {$errorMessage}");
-        }
-
-        return $response;
-    }
-
-    /**
-     * Make a transcription API request with multipart form data.
-     *
-     * @codeCoverageIgnore
-     *
-     * @return array<string, mixed>
-     */
-    protected function transcriptionRequest(string $audioPath, array $fields): array
-    {
-        $ch = curl_init(self::AUDIO_TRANSCRIPTIONS_API_URL);
-
-        $fields['file'] = new \CURLFile($audioPath);
-
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $fields,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
-        ]);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-
-        curl_close($ch);
-
-        if ($error !== '') {
-            throw new RuntimeException("OpenAI Transcription API request failed: {$error}");
-        }
-
-        $data = json_decode($response, true);
-
-        if ($httpCode >= 400) {
-            $errorMessage = $data['error']['message'] ?? 'Unknown error';
-            throw new RuntimeException("OpenAI Transcription API error ({$httpCode}): {$errorMessage}");
-        }
-
-        return $data;
     }
 }
