@@ -21,6 +21,9 @@ use PapiAI\Core\Contracts\ProviderInterface;
 use PapiAI\Core\Contracts\TextToSpeechProviderInterface;
 use PapiAI\Core\Contracts\TranscriptionProviderInterface;
 use PapiAI\Core\EmbeddingResponse;
+use PapiAI\Core\Exception\AuthenticationException;
+use PapiAI\Core\Exception\ProviderException;
+use PapiAI\Core\Exception\RateLimitException;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
@@ -41,10 +44,7 @@ use RuntimeException;
  */
 class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, TextToSpeechProviderInterface, TranscriptionProviderInterface
 {
-    private const API_URL = 'https://api.openai.com/v1/chat/completions';
-    private const EMBEDDINGS_API_URL = 'https://api.openai.com/v1/embeddings';
-    private const AUDIO_SPEECH_API_URL = 'https://api.openai.com/v1/audio/speech';
-    private const AUDIO_TRANSCRIPTIONS_API_URL = 'https://api.openai.com/v1/audio/transcriptions';
+    private const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
     public const MODEL_GPT_4_5 = 'gpt-4.5-preview';
     public const MODEL_GPT_4O = 'gpt-4o';
@@ -55,11 +55,16 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     public const MODEL_O1_MINI = 'o1-mini';
     public const MODEL_O3_MINI = 'o3-mini';
 
+    private readonly string $baseUrl;
+
     public function __construct(
         private readonly string $apiKey,
         private readonly string $defaultModel = self::MODEL_GPT_4O,
         private readonly int $defaultMaxTokens = 4096,
+        ?string $baseUrl = null,
+        private readonly ?string $apiVersion = null,
     ) {
+        $this->baseUrl = rtrim($baseUrl ?? self::DEFAULT_BASE_URL, '/');
     }
 
     #[\Override]
@@ -356,22 +361,125 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
+     * Build the full URL for an endpoint, appending api-version for Azure.
+     */
+    private function buildUrl(string $path): string
+    {
+        $url = $this->baseUrl . $path;
+
+        if ($this->apiVersion !== null) {
+            $url .= '?api-version=' . $this->apiVersion;
+        }
+
+        return $url;
+    }
+
+    /**
+     * Get the authorization headers based on the authentication mode.
+     *
+     * @return string[]
+     */
+    private function getAuthHeaders(): array
+    {
+        if ($this->apiVersion !== null) {
+            return ['api-key: ' . $this->apiKey];
+        }
+
+        return ['Authorization: Bearer ' . $this->apiKey];
+    }
+
+    /**
+     * Check the HTTP status code and throw appropriate exceptions.
+     *
+     * @param int $httpCode
+     * @param array<string, mixed>|null $data
+     * @param array<string, string> $responseHeaders
+     *
+     * @throws AuthenticationException
+     * @throws RateLimitException
+     * @throws ProviderException
+     */
+    private function handleErrorResponse(int $httpCode, ?array $data, array $responseHeaders = []): void
+    {
+        if ($httpCode < 400) {
+            return;
+        }
+
+        if ($httpCode === 401) {
+            throw new AuthenticationException(
+                provider: 'openai',
+                statusCode: $httpCode,
+                responseBody: $data,
+            );
+        }
+
+        if ($httpCode === 429) {
+            $retryAfter = isset($responseHeaders['retry-after'])
+                ? (int) $responseHeaders['retry-after']
+                : null;
+
+            throw new RateLimitException(
+                provider: 'openai',
+                retryAfterSeconds: $retryAfter,
+                statusCode: $httpCode,
+                responseBody: $data,
+            );
+        }
+
+        $errorMessage = $data['error']['message'] ?? 'Unknown error';
+
+        throw new ProviderException(
+            message: "OpenAI API error ({$httpCode}): {$errorMessage}",
+            provider: 'openai',
+            statusCode: $httpCode,
+            responseBody: $data,
+        );
+    }
+
+    /**
+     * Parse response headers from a cURL header callback.
+     *
+     * @param string $rawHeaders
+     *
+     * @return array<string, string>
+     */
+    private function parseResponseHeaders(string $rawHeaders): array
+    {
+        $headers = [];
+        foreach (explode("\r\n", $rawHeaders) as $line) {
+            if (str_contains($line, ':')) {
+                [$key, $value] = explode(':', $line, 2);
+                $headers[strtolower(trim($key))] = trim($value);
+            }
+        }
+
+        return $headers;
+    }
+
+    /**
      * Make an API request.
      *
      * @codeCoverageIgnore
      */
     protected function request(array $payload): array
     {
-        $ch = curl_init(self::API_URL);
+        $url = $this->buildUrl('/chat/completions');
+        $ch = curl_init($url);
 
+        $rawHeaders = '';
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
+            CURLOPT_HTTPHEADER => array_merge(
+                ['Content-Type: application/json'],
+                $this->getAuthHeaders(),
+            ),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
         ]);
 
         $response = curl_exec($ch);
@@ -385,11 +493,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         }
 
         $data = json_decode($response, true);
-
-        if ($httpCode >= 400) {
-            $errorMessage = $data['error']['message'] ?? 'Unknown error';
-            throw new RuntimeException("OpenAI API error ({$httpCode}): {$errorMessage}");
-        }
+        $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
 
         return $data;
     }
@@ -401,16 +505,23 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      */
     protected function embeddingRequest(array $payload): array
     {
-        $ch = curl_init(self::EMBEDDINGS_API_URL);
+        $url = $this->buildUrl('/embeddings');
+        $ch = curl_init($url);
 
+        $rawHeaders = '';
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
+            CURLOPT_HTTPHEADER => array_merge(
+                ['Content-Type: application/json'],
+                $this->getAuthHeaders(),
+            ),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
         ]);
 
         $response = curl_exec($ch);
@@ -424,11 +535,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         }
 
         $data = json_decode($response, true);
-
-        if ($httpCode >= 400) {
-            $errorMessage = $data['error']['message'] ?? 'Unknown error';
-            throw new RuntimeException("OpenAI Embeddings API error ({$httpCode}): {$errorMessage}");
-        }
+        $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
 
         return $data;
     }
@@ -442,16 +549,23 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      */
     protected function streamRequest(array $payload): Generator
     {
-        $ch = curl_init(self::API_URL);
+        $url = $this->buildUrl('/chat/completions');
+        $ch = curl_init($url);
 
         $buffer = '';
+        $rawHeaders = '';
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
+            CURLOPT_HTTPHEADER => array_merge(
+                ['Content-Type: application/json'],
+                $this->getAuthHeaders(),
+            ),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
             CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$buffer) {
                 $buffer .= $data;
 
@@ -460,7 +574,13 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         ]);
 
         curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
+
+        if ($httpCode >= 400) {
+            $data = json_decode($buffer, true);
+            $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
+        }
 
         // Parse SSE events
         $lines = explode("\n", $buffer);
@@ -488,16 +608,23 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      */
     protected function audioRequest(array $payload): string
     {
-        $ch = curl_init(self::AUDIO_SPEECH_API_URL);
+        $url = $this->buildUrl('/audio/speech');
+        $ch = curl_init($url);
 
+        $rawHeaders = '';
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
+            CURLOPT_HTTPHEADER => array_merge(
+                ['Content-Type: application/json'],
+                $this->getAuthHeaders(),
+            ),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
         ]);
 
         /** @var string $response */
@@ -513,8 +640,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 
         if ($httpCode >= 400) {
             $data = json_decode($response, true);
-            $errorMessage = $data['error']['message'] ?? 'Unknown error';
-            throw new RuntimeException("OpenAI Audio API error ({$httpCode}): {$errorMessage}");
+            $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
         }
 
         return $response;
@@ -529,17 +655,22 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      */
     protected function transcriptionRequest(string $audioPath, array $fields): array
     {
-        $ch = curl_init(self::AUDIO_TRANSCRIPTIONS_API_URL);
+        $url = $this->buildUrl('/audio/transcriptions');
+        $ch = curl_init($url);
 
         $fields['file'] = new \CURLFile($audioPath);
 
+        $rawHeaders = '';
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => $fields,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
+            CURLOPT_HTTPHEADER => $this->getAuthHeaders(),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
         ]);
 
         $response = curl_exec($ch);
@@ -553,11 +684,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         }
 
         $data = json_decode($response, true);
-
-        if ($httpCode >= 400) {
-            $errorMessage = $data['error']['message'] ?? 'Unknown error';
-            throw new RuntimeException("OpenAI Transcription API error ({$httpCode}): {$errorMessage}");
-        }
+        $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
 
         return $data;
     }
