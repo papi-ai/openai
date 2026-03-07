@@ -1,6 +1,6 @@
 # PapiAI OpenAI Provider
 
-[![Tests](https://github.com/papi-ai/openai/workflows/Tests/badge.svg)](https://github.com/papi-ai/openai/actions?query=workflow%3ATests)
+[![Tests](https://github.com/papi-ai/openai/workflows/CI/badge.svg)](https://github.com/papi-ai/openai/actions?query=workflow%3ACI)
 
 OpenAI provider for [PapiAI](https://github.com/papi-ai/papi-core) - A simple but powerful PHP library for building AI agents.
 
