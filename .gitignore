@@ -7,3 +7,5 @@ composer.lock
 *.swp
 *.swo
 .DS_Store
+.php-cs-fixer.cache
+.psalm/

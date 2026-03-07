@@ -33,7 +33,7 @@ use RuntimeException;
  * - o1-preview (reasoning)
  * - o1-mini (fast reasoning)
  */
-final class OpenAIProvider implements ProviderInterface
+class OpenAIProvider implements ProviderInterface
 {
     private const API_URL = 'https://api.openai.com/v1/chat/completions';
 
@@ -50,7 +50,8 @@ final class OpenAIProvider implements ProviderInterface
         private readonly string $apiKey,
         private readonly string $defaultModel = self::MODEL_GPT_4O,
         private readonly int $defaultMaxTokens = 4096,
-    ) {}
+    ) {
+    }
 
     public function chat(array $messages, array $options = []): Response
     {
@@ -249,7 +250,7 @@ final class OpenAIProvider implements ProviderInterface
     /**
      * Make an API request.
      */
-    private function request(array $payload): array
+    protected function request(array $payload): array
     {
         $ch = curl_init(self::API_URL);
 
@@ -288,7 +289,7 @@ final class OpenAIProvider implements ProviderInterface
      *
      * @return Generator<array>
      */
-    private function streamRequest(array $payload): Generator
+    protected function streamRequest(array $payload): Generator
     {
         $ch = curl_init(self::API_URL);
 
@@ -302,6 +303,7 @@ final class OpenAIProvider implements ProviderInterface
             ],
             CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$buffer) {
                 $buffer .= $data;
+
                 return strlen($data);
             },
         ]);
