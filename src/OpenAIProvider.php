@@ -33,14 +33,18 @@ use PapiAI\Core\TranscriptionResponse;
 use RuntimeException;
 
 /**
- * OpenAI API Provider.
+ * OpenAI API provider for PapiAI.
  *
- * Supports OpenAI models including:
- * - gpt-4o (latest, multimodal)
- * - gpt-4o-mini (fast, cost-effective)
- * - gpt-4-turbo (high quality)
- * - o1-preview (reasoning)
- * - o1-mini (fast reasoning)
+ * Bridges PapiAI's core types (Message, Response, ToolCall) with OpenAI's
+ * Chat Completions API, handling format conversion in both directions. Supports
+ * chat completions, streaming, tool calling, vision (multimodal), structured
+ * JSON output, text embeddings, text-to-speech, and audio transcription.
+ *
+ * Authentication is via Bearer token (or api-key header for Azure OpenAI).
+ * All HTTP is done with ext-curl directly, with no HTTP abstraction layer.
+ * The base URL is configurable for Azure OpenAI compatibility.
+ *
+ * @see https://platform.openai.com/docs/api-reference
  */
 class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, TextToSpeechProviderInterface, TranscriptionProviderInterface
 {
@@ -57,6 +61,19 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 
     private readonly string $baseUrl;
 
+    /**
+     * Create a new OpenAI provider instance.
+     *
+     * When $baseUrl and $apiVersion are provided, the provider switches to
+     * Azure OpenAI mode, using api-key header auth and appending api-version
+     * as a query parameter.
+     *
+     * @param string      $apiKey          API key for authentication
+     * @param string      $defaultModel    Model to use when none is specified in options
+     * @param int         $defaultMaxTokens Default max tokens for completions
+     * @param string|null $baseUrl         Custom base URL (for Azure OpenAI or proxies)
+     * @param string|null $apiVersion      API version query parameter (enables Azure mode)
+     */
     public function __construct(
         private readonly string $apiKey,
         private readonly string $defaultModel = self::MODEL_GPT_4O,
@@ -67,6 +84,21 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $this->baseUrl = rtrim($baseUrl ?? self::DEFAULT_BASE_URL, '/');
     }
 
+    /**
+     * Send a chat completion request to OpenAI.
+     *
+     * Converts PapiAI Messages to OpenAI's message format, sends the request,
+     * and wraps the response in a core Response object.
+     *
+     * @param Message[] $messages Conversation history
+     * @param array     $options  Provider options (model, maxTokens, temperature, tools, outputSchema, etc.)
+     *
+     * @return Response The parsed completion response
+     *
+     * @throws ProviderException       When the API returns an error
+     * @throws AuthenticationException When the API key is invalid
+     * @throws RateLimitException      When rate limits are exceeded
+     */
     #[\Override]
     public function chat(array $messages, array $options = []): Response
     {
@@ -76,6 +108,21 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         return Response::fromOpenAI($response, $messages);
     }
 
+    /**
+     * Stream a chat completion response from OpenAI.
+     *
+     * Yields StreamChunk objects as server-sent events arrive, with the final
+     * chunk marked as complete via its isComplete flag.
+     *
+     * @param Message[] $messages Conversation history
+     * @param array     $options  Provider options (model, maxTokens, temperature, tools, etc.)
+     *
+     * @return iterable<StreamChunk> Stream of text chunks
+     *
+     * @throws ProviderException       When the API returns an error
+     * @throws AuthenticationException When the API key is invalid
+     * @throws RateLimitException      When rate limits are exceeded
+     */
     #[\Override]
     public function stream(array $messages, array $options = []): iterable
     {
@@ -93,24 +140,54 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         }
     }
 
+    /**
+     * Indicate that this provider supports tool/function calling.
+     *
+     * @return bool Always true — OpenAI supports function calling natively
+     */
     #[\Override]
     public function supportsTool(): bool
     {
         return true;
     }
 
+    /**
+     * Indicate that this provider supports vision (image) inputs.
+     *
+     * @return bool Always true — GPT-4o and GPT-4 Turbo accept image content
+     */
     #[\Override]
     public function supportsVision(): bool
     {
         return true;
     }
 
+    /**
+     * Indicate that this provider supports structured JSON output via json_schema.
+     *
+     * @return bool Always true — OpenAI supports response_format with json_schema
+     */
     #[\Override]
     public function supportsStructuredOutput(): bool
     {
         return true;
     }
 
+    /**
+     * Generate vector embeddings for the given input text(s).
+     *
+     * Uses OpenAI's Embeddings API (default model: text-embedding-3-small).
+     * Accepts a single string or an array of strings for batch embedding.
+     *
+     * @param string|string[] $input Text(s) to embed
+     * @param array           $options Options (model, dimensions)
+     *
+     * @return EmbeddingResponse The embedding vectors with model and usage metadata
+     *
+     * @throws ProviderException       When the API returns an error
+     * @throws AuthenticationException When the API key is invalid
+     * @throws RateLimitException      When rate limits are exceeded
+     */
     #[\Override]
     public function embed(string|array $input, array $options = []): EmbeddingResponse
     {
@@ -138,6 +215,20 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         );
     }
 
+    /**
+     * Convert text to speech audio using OpenAI's TTS API.
+     *
+     * Returns raw audio data in the requested format (default: mp3).
+     *
+     * @param string $text    The text to synthesize into speech
+     * @param array  $options Options (model, voice, format, speed, instructions)
+     *
+     * @return AudioResponse The synthesized audio data with format and model metadata
+     *
+     * @throws ProviderException       When the API returns an error
+     * @throws AuthenticationException When the API key is invalid
+     * @throws RateLimitException      When rate limits are exceeded
+     */
     #[\Override]
     public function synthesize(string $text, array $options = []): AudioResponse
     {
@@ -165,6 +256,21 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         );
     }
 
+    /**
+     * Transcribe audio to text using OpenAI's Whisper API.
+     *
+     * Sends the audio file as multipart form data and returns verbose JSON
+     * with segment-level timestamps.
+     *
+     * @param string $audioPath Filesystem path to the audio file
+     * @param array  $options   Options (model, language, prompt)
+     *
+     * @return TranscriptionResponse The transcribed text with segments and metadata
+     *
+     * @throws ProviderException       When the API returns an error
+     * @throws AuthenticationException When the API key is invalid
+     * @throws RateLimitException      When rate limits are exceeded
+     */
     #[\Override]
     public function transcribe(string $audioPath, array $options = []): TranscriptionResponse
     {
@@ -204,6 +310,11 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         );
     }
 
+    /**
+     * Return the unique provider identifier.
+     *
+     * @return string Always 'openai'
+     */
     #[\Override]
     public function getName(): string
     {
@@ -457,7 +568,18 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Make an API request.
+     * Send a JSON request to the Chat Completions endpoint and return the decoded response.
+     *
+     * Protected to allow test doubles to override HTTP transport.
+     *
+     * @param array<string, mixed> $payload The JSON-encodable request body
+     *
+     * @return array<string, mixed> The decoded JSON response
+     *
+     * @throws RuntimeException        When a cURL transport error occurs
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
      *
      * @codeCoverageIgnore
      */
@@ -499,7 +621,18 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Make an embedding API request.
+     * Send a JSON request to the Embeddings endpoint and return the decoded response.
+     *
+     * Protected to allow test doubles to override HTTP transport.
+     *
+     * @param array<string, mixed> $payload The JSON-encodable request body
+     *
+     * @return array<string, mixed> The decoded JSON response
+     *
+     * @throws RuntimeException        When a cURL transport error occurs
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
      *
      * @codeCoverageIgnore
      */
@@ -541,11 +674,21 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Make a streaming API request.
+     * Send a streaming request to the Chat Completions endpoint and yield parsed SSE events.
+     *
+     * Buffers the full response then parses server-sent events line by line,
+     * yielding each decoded JSON event until the [DONE] sentinel.
+     * Protected to allow test doubles to override HTTP transport.
+     *
+     * @param array<string, mixed> $payload The JSON-encodable request body (stream flag added by caller)
+     *
+     * @return Generator<int, array<string, mixed>> Decoded SSE event payloads
+     *
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
      *
      * @codeCoverageIgnore
-     *
-     * @return Generator<array>
      */
     protected function streamRequest(array $payload): Generator
     {
@@ -600,9 +743,20 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Make an audio speech API request.
+     * Send a JSON request to the Audio Speech endpoint and return raw audio bytes.
      *
-     * Returns raw audio bytes.
+     * Unlike other request methods, this returns the raw binary response
+     * rather than decoded JSON, since the TTS API returns audio data directly.
+     * Protected to allow test doubles to override HTTP transport.
+     *
+     * @param array<string, mixed> $payload The JSON-encodable request body
+     *
+     * @return string Raw audio bytes in the requested format
+     *
+     * @throws RuntimeException        When a cURL transport error occurs
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
      *
      * @codeCoverageIgnore
      */
@@ -647,11 +801,22 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Make a transcription API request with multipart form data.
+     * Send a multipart form request to the Audio Transcriptions endpoint.
+     *
+     * Attaches the audio file via CURLFile and sends additional fields
+     * as form data. Protected to allow test doubles to override HTTP transport.
+     *
+     * @param string               $audioPath Filesystem path to the audio file
+     * @param array<string, mixed> $fields    Form fields (model, response_format, language, etc.)
+     *
+     * @return array<string, mixed> The decoded JSON response with transcription data
+     *
+     * @throws RuntimeException        When a cURL transport error occurs
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
      *
      * @codeCoverageIgnore
-     *
-     * @return array<string, mixed>
      */
     protected function transcriptionRequest(string $audioPath, array $fields): array
     {
