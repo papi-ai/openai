@@ -1,6 +1,6 @@
 # PapiAI OpenAI Provider
 
-[![Tests](https://github.com/papi-ai/openai/workflows/CI/badge.svg)](https://github.com/papi-ai/openai/actions?query=workflow%3ACI)
+[![CI](https://github.com/papi-ai/openai/workflows/CI/badge.svg)](https://github.com/papi-ai/openai/actions?query=workflow%3ACI) [![Latest Version](https://img.shields.io/packagist/v/papi-ai/openai.svg)](https://packagist.org/packages/papi-ai/openai) [![Total Downloads](https://img.shields.io/packagist/dt/papi-ai/openai.svg)](https://packagist.org/packages/papi-ai/openai) [![PHP Version](https://img.shields.io/packagist/php-v/papi-ai/openai.svg)](https://packagist.org/packages/papi-ai/openai) [![License](https://img.shields.io/packagist/l/papi-ai/openai.svg)](https://packagist.org/packages/papi-ai/openai)
 
 OpenAI provider for [PapiAI](https://github.com/papi-ai/papi-core) - A simple but powerful PHP library for building AI agents.
 
