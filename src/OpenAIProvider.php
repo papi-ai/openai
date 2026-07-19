@@ -20,16 +20,19 @@ use PapiAI\Core\Contracts\EmbeddingProviderInterface;
 use PapiAI\Core\Contracts\ProviderInterface;
 use PapiAI\Core\Contracts\TextToSpeechProviderInterface;
 use PapiAI\Core\Contracts\TranscriptionProviderInterface;
+use PapiAI\Core\Contracts\VideoProviderInterface;
 use PapiAI\Core\EmbeddingResponse;
 use PapiAI\Core\Exception\AuthenticationException;
 use PapiAI\Core\Exception\ProviderException;
 use PapiAI\Core\Exception\RateLimitException;
+use PapiAI\Core\JobStatus;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
 use PapiAI\Core\TranscriptionResponse;
+use PapiAI\Core\VideoResponse;
 use RuntimeException;
 
 /**
@@ -46,7 +49,7 @@ use RuntimeException;
  *
  * @see https://platform.openai.com/docs/api-reference
  */
-class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, TextToSpeechProviderInterface, TranscriptionProviderInterface
+class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, TextToSpeechProviderInterface, TranscriptionProviderInterface, VideoProviderInterface
 {
     private const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
@@ -58,6 +61,10 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     public const MODEL_O1_PREVIEW = 'o1-preview';
     public const MODEL_O1_MINI = 'o1-mini';
     public const MODEL_O3_MINI = 'o3-mini';
+
+    // Sora model aliases for video generation
+    public const MODEL_SORA_2 = 'sora-2';
+    public const MODEL_SORA_2_PRO = 'sora-2-pro';
 
     private readonly string $baseUrl;
 
@@ -852,5 +859,336 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
 
         return $data;
+    }
+
+    /**
+     * Whether this provider supports video generation from text prompts.
+     *
+     * Supported via OpenAI's Sora models through the /videos endpoint.
+     *
+     * @return bool Always true for OpenAI
+     */
+    public function supportsVideoGeneration(): bool
+    {
+        return true;
+    }
+
+    /**
+     * Generate a video from a text prompt using OpenAI's Sora API, blocking until ready.
+     *
+     * Submits the job, polls /videos/{id} with exponential backoff (1s doubling up to 10s)
+     * until Sora finishes, then downloads and returns the finished clip.
+     *
+     * @param string $prompt Descriptive text prompt for video generation
+     * @param array{
+     *     model?: string,
+     *     aspectRatio?: string,
+     *     durationSeconds?: int,
+     *     resolution?: string,
+     *     fps?: int,
+     *     image?: string,
+     *     negativePrompt?: string,
+     *     seconds?: int,
+     *     size?: string,
+     *     pollTimeoutSeconds?: int,
+     * } $options Generation options (seconds/size are Sora-native aliases of durationSeconds/resolution)
+     *
+     * @return VideoResponse The generated video with the downloaded MP4 bytes
+     *
+     * @throws AuthenticationException When the API key is invalid (HTTP 401)
+     * @throws RateLimitException      When rate limits are exceeded (HTTP 429)
+     * @throws ProviderException       When generation fails or times out
+     * @throws RuntimeException        When a cURL request itself fails
+     */
+    public function generateVideo(string $prompt, array $options = []): VideoResponse
+    {
+        $jobId = $this->startVideo($prompt, $options);
+        $timeoutSeconds = $options['pollTimeoutSeconds'] ?? 600;
+        $delaySeconds = 1;
+        $waited = 0;
+
+        while (true) {
+            $status = $this->videoStatus($jobId);
+
+            if ($status->isCompleted()) {
+                return $this->fetchVideo($jobId);
+            }
+
+            if ($status->isFailed()) {
+                throw new ProviderException(
+                    sprintf('Sora video generation failed: %s.', $status->error ?? 'unknown error'),
+                    'openai',
+                );
+            }
+
+            if ($waited >= $timeoutSeconds) {
+                throw new ProviderException(
+                    sprintf('Sora video generation timed out after %d seconds.', $timeoutSeconds),
+                    'openai',
+                );
+            }
+
+            $this->pause($delaySeconds);
+            $waited += $delaySeconds;
+            $delaySeconds = min($delaySeconds * 2, 10);
+        }
+    }
+
+    /**
+     * Submit a Sora video generation job and return the video id immediately.
+     *
+     * @param string $prompt  Descriptive text prompt for video generation
+     * @param array  $options Generation options (see generateVideo())
+     *
+     * @return string The Sora video id, used as the job identifier
+     *
+     * @throws AuthenticationException When the API key is invalid (HTTP 401)
+     * @throws RateLimitException      When rate limits are exceeded (HTTP 429)
+     * @throws ProviderException       When the API returns an error or no id
+     * @throws RuntimeException        When the cURL request itself fails
+     */
+    public function startVideo(string $prompt, array $options = []): string
+    {
+        $payload = [
+            'model' => $options['model'] ?? self::MODEL_SORA_2,
+            'prompt' => $prompt,
+        ];
+
+        $seconds = $options['seconds'] ?? $options['durationSeconds'] ?? null;
+        if ($seconds !== null) {
+            $payload['seconds'] = (string) $seconds;
+        }
+
+        $size = $options['size'] ?? $options['resolution'] ?? null;
+        if ($size !== null) {
+            $payload['size'] = $size;
+        }
+
+        $response = $this->videoCreateRequest($payload);
+        $id = $response['id'] ?? '';
+
+        if ($id === '') {
+            throw new ProviderException('Sora did not return a video id.', 'openai');
+        }
+
+        return $id;
+    }
+
+    /**
+     * Poll the status of a submitted Sora video job.
+     *
+     * @param string $jobId The video id returned by startVideo()
+     *
+     * @return JobStatus Current status (queued/in_progress map to pending/running)
+     *
+     * @throws AuthenticationException When the API key is invalid (HTTP 401)
+     * @throws RateLimitException      When rate limits are exceeded (HTTP 429)
+     * @throws ProviderException       When the API returns any other error
+     * @throws RuntimeException        When the cURL request itself fails
+     */
+    public function videoStatus(string $jobId): JobStatus
+    {
+        $video = $this->videoRetrieveRequest($jobId);
+        $status = $video['status'] ?? 'in_progress';
+
+        return match ($status) {
+            'completed' => new JobStatus($jobId, JobStatus::COMPLETED),
+            'failed' => new JobStatus($jobId, JobStatus::FAILED, null, $video['error']['message'] ?? 'unknown error'),
+            'queued' => new JobStatus($jobId, JobStatus::PENDING),
+            default => new JobStatus($jobId, JobStatus::RUNNING),
+        };
+    }
+
+    /**
+     * Retrieve the finished video for a completed Sora job.
+     *
+     * @param string $jobId The video id returned by startVideo()
+     *
+     * @return VideoResponse The generated video with the downloaded MP4 bytes
+     *
+     * @throws AuthenticationException When the API key is invalid (HTTP 401)
+     * @throws RateLimitException      When rate limits are exceeded (HTTP 429)
+     * @throws ProviderException       When the job is unfinished or failed
+     * @throws RuntimeException        When the cURL request itself fails
+     */
+    public function fetchVideo(string $jobId): VideoResponse
+    {
+        $video = $this->videoRetrieveRequest($jobId);
+        $status = $video['status'] ?? 'in_progress';
+
+        if ($status === 'failed') {
+            throw new ProviderException(
+                sprintf('Sora video generation failed: %s.', $video['error']['message'] ?? 'unknown error'),
+                'openai',
+            );
+        }
+
+        if ($status !== 'completed') {
+            throw new ProviderException(
+                sprintf('Video job "%s" is not complete yet.', $jobId),
+                'openai',
+            );
+        }
+
+        $bytes = $this->videoContentRequest($jobId);
+        $duration = isset($video['seconds']) ? (float) $video['seconds'] : null;
+
+        return VideoResponse::fromBytes($bytes, (string) ($video['model'] ?? self::MODEL_SORA_2), 'video/mp4', $duration);
+    }
+
+    /**
+     * Pause between poll attempts. Isolated so tests can override it to no-op.
+     *
+     * @param int $seconds Seconds to sleep
+     */
+    protected function pause(int $seconds): void
+    {
+        sleep($seconds);
+    }
+
+    /**
+     * Create a Sora video job (POST /videos). Protected so test doubles can stub it.
+     *
+     * @param array<string, mixed> $payload The JSON-encodable request body
+     *
+     * @return array<string, mixed> The decoded video object
+     *
+     * @throws RuntimeException        When a cURL transport error occurs
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
+     *
+     * @codeCoverageIgnore
+     */
+    protected function videoCreateRequest(array $payload): array
+    {
+        $url = $this->buildUrl('/videos');
+        $ch = curl_init($url);
+
+        $rawHeaders = '';
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => array_merge(
+                ['Content-Type: application/json'],
+                $this->getAuthHeaders(),
+            ),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+
+        curl_close($ch);
+
+        if ($error !== '') {
+            throw new RuntimeException("OpenAI Video API request failed: {$error}");
+        }
+
+        $data = json_decode($response, true);
+        $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
+
+        return $data;
+    }
+
+    /**
+     * Retrieve a Sora video object (GET /videos/{id}). Protected so test doubles can stub it.
+     *
+     * @param string $videoId The Sora video id
+     *
+     * @return array<string, mixed> The decoded video object
+     *
+     * @throws RuntimeException        When a cURL transport error occurs
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
+     *
+     * @codeCoverageIgnore
+     */
+    protected function videoRetrieveRequest(string $videoId): array
+    {
+        $url = $this->buildUrl('/videos/' . $videoId);
+        $ch = curl_init($url);
+
+        $rawHeaders = '';
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => $this->getAuthHeaders(),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+
+        curl_close($ch);
+
+        if ($error !== '') {
+            throw new RuntimeException("OpenAI Video API request failed: {$error}");
+        }
+
+        $data = json_decode($response, true);
+        $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
+
+        return $data;
+    }
+
+    /**
+     * Download the finished MP4 bytes (GET /videos/{id}/content). Protected so test doubles can stub it.
+     *
+     * @param string $videoId The Sora video id
+     *
+     * @return string Raw MP4 bytes
+     *
+     * @throws RuntimeException        When a cURL transport error occurs
+     * @throws ProviderException       When the API returns an error status
+     * @throws AuthenticationException When the API key is invalid (401)
+     * @throws RateLimitException      When rate limits are exceeded (429)
+     *
+     * @codeCoverageIgnore
+     */
+    protected function videoContentRequest(string $videoId): string
+    {
+        $url = $this->buildUrl('/videos/' . $videoId . '/content');
+        $ch = curl_init($url);
+
+        $rawHeaders = '';
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => $this->getAuthHeaders(),
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$rawHeaders) {
+                $rawHeaders .= $header;
+
+                return strlen($header);
+            },
+        ]);
+
+        /** @var string $response */
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+
+        curl_close($ch);
+
+        if ($error !== '') {
+            throw new RuntimeException("OpenAI Video API request failed: {$error}");
+        }
+
+        if ($httpCode >= 400) {
+            $data = json_decode($response, true);
+            $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
+        }
+
+        return $response;
     }
 }
