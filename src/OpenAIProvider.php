@@ -31,6 +31,7 @@ use PapiAI\Core\Response;
 use PapiAI\Core\Role;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
+use PapiAI\Core\ToolChoice;
 use PapiAI\Core\TranscriptionResponse;
 use PapiAI\Core\VideoResponse;
 use RuntimeException;
@@ -372,6 +373,21 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         // Handle tools
         if (isset($options['tools']) && !empty($options['tools'])) {
             $payload['tools'] = $this->convertTools($options['tools']);
+        }
+
+        // Forced tool choice. Validation lives in core and throws before any HTTP call.
+        if (isset($options['toolChoice'])) {
+            $choice = ToolChoice::fromOption($options['toolChoice'], $options['tools'] ?? []);
+
+            if (!empty($options['tools'])) {
+                $payload['tool_choice'] = $choice->toolName !== null
+                    ? ['type' => 'function', 'function' => ['name' => $choice->toolName]]
+                    : match ($choice->mode) {
+                        ToolChoice::NONE => 'none',
+                        ToolChoice::REQUIRED => 'required',
+                        default => 'auto',
+                    };
+            }
         }
 
         return $payload;
