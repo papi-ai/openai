@@ -17,6 +17,7 @@ namespace PapiAI\OpenAI;
 use Generator;
 use PapiAI\Core\AudioResponse;
 use PapiAI\Core\Contracts\EmbeddingProviderInterface;
+use PapiAI\Core\Contracts\NamedToolSelectableInterface;
 use PapiAI\Core\Contracts\ProviderInterface;
 use PapiAI\Core\Contracts\TextToSpeechProviderInterface;
 use PapiAI\Core\Contracts\TranscriptionProviderInterface;
@@ -52,7 +53,7 @@ use RuntimeException;
  *
  * @see https://platform.openai.com/docs/api-reference
  */
-class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, TextToSpeechProviderInterface, TranscriptionProviderInterface, VideoProviderInterface
+class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, TextToSpeechProviderInterface, TranscriptionProviderInterface, VideoProviderInterface, NamedToolSelectableInterface
 {
     private const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
