@@ -21,10 +21,12 @@ use PapiAI\Core\Contracts\ProviderInterface;
 use PapiAI\Core\Contracts\TextToSpeechProviderInterface;
 use PapiAI\Core\Contracts\TranscriptionProviderInterface;
 use PapiAI\Core\Contracts\VideoProviderInterface;
+use PapiAI\Core\Effort;
 use PapiAI\Core\EmbeddingResponse;
 use PapiAI\Core\Exception\AuthenticationException;
 use PapiAI\Core\Exception\ProviderException;
 use PapiAI\Core\Exception\RateLimitException;
+use PapiAI\Core\Exception\UnknownEffortException;
 use PapiAI\Core\JobStatus;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
@@ -54,6 +56,14 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 {
     private const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
+    /**
+     * OpenAI's own spellings for the two levels whose neutral names differ.
+     */
+    private const NATIVE_EFFORT = [
+        'extra-high' => 'xhigh',
+        'maximum' => 'max',
+    ];
+
     public const MODEL_GPT_4_5 = 'gpt-4.5-preview';
     public const MODEL_GPT_4O = 'gpt-4o';
     public const MODEL_GPT_4O_MINI = 'gpt-4o-mini';
@@ -81,6 +91,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      * @param int         $defaultMaxTokens Default max tokens for completions
      * @param string|null $baseUrl         Custom base URL (for Azure OpenAI or proxies)
      * @param string|null $apiVersion      API version query parameter (enables Azure mode)
+     * @param Effort|null $defaultEffort   Reasoning effort when none is given per call
      */
     public function __construct(
         private readonly string $apiKey,
@@ -88,6 +99,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         private readonly int $defaultMaxTokens = 4096,
         ?string $baseUrl = null,
         private readonly ?string $apiVersion = null,
+        private readonly ?Effort $defaultEffort = null,
     ) {
         $this->baseUrl = rtrim($baseUrl ?? self::DEFAULT_BASE_URL, '/');
     }
@@ -390,7 +402,67 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
             }
         }
 
+        $effort = $this->effortFor($options);
+
+        if ($effort !== null) {
+            $model = (string) ($options['model'] ?? $this->defaultModel);
+            $narrowed = $effort->nearestOf($this->levelsFor($model));
+
+            $payload['reasoning_effort'] = self::NATIVE_EFFORT[$narrowed->value] ?? $narrowed->value;
+        }
+
         return $payload;
+    }
+
+    /**
+     * The reasoning-effort levels a given model accepts.
+     *
+     * The set genuinely varies, and the API rejects a level the model does not know rather than
+     * ignoring it, so a request that overshoots is a 400 and not a silent downgrade. `xhigh`
+     * arrived with the 5.1 codex generation, `max` with 5.6, and `minimal` exists only on the
+     * original GPT-5. Everything older, the o-series included, takes the three middle levels only.
+     *
+     * Decided from the model name because the API offers no way to ask.
+     *
+     * @return non-empty-list<Effort>
+     */
+    private function levelsFor(string $model): array
+    {
+        if (!preg_match('/gpt-5(?:\.(\d+))?/i', $model, $matches)) {
+            // o-series and everything older.
+            return [Effort::Low, Effort::Medium, Effort::High];
+        }
+
+        $minor = isset($matches[1]) ? (int) $matches[1] : 0;
+
+        if ($minor >= 6) {
+            return [Effort::None, Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh, Effort::Maximum];
+        }
+
+        if ($minor >= 1) {
+            return [Effort::None, Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh];
+        }
+
+        // The original GPT-5 is the only model that took "minimal", and it has no xhigh.
+        return [Effort::Minimal, Effort::Low, Effort::Medium, Effort::High];
+    }
+
+    /**
+     * The effort this request asks for: the per-call option, else the provider default.
+     *
+     * @param array<string, mixed> $options The caller's request options
+     *
+     * @throws UnknownEffortException When the level is not one core defines
+     */
+    private function effortFor(array $options): ?Effort
+    {
+        if (!isset($options['effort'])) {
+            return $this->defaultEffort;
+        }
+
+        $level = (string) $options['effort'];
+
+        return Effort::tryFrom($level) ?? throw new UnknownEffortException($level);
     }
 
     /**
