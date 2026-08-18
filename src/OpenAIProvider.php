@@ -704,8 +704,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
 
-        curl_close($ch);
-
         if ($error !== '') {
             throw new RuntimeException("OpenAI API request failed: {$error}");
         }
@@ -756,8 +754,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-
-        curl_close($ch);
 
         if ($error !== '') {
             throw new RuntimeException("OpenAI Embeddings API request failed: {$error}");
@@ -814,7 +810,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 
         curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         if ($httpCode >= 400) {
             $data = json_decode($buffer, true);
@@ -882,8 +877,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
 
-        curl_close($ch);
-
         if ($error !== '') {
             throw new RuntimeException("OpenAI Audio API request failed: {$error}");
         }
@@ -937,8 +930,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-
-        curl_close($ch);
 
         if ($error !== '') {
             throw new RuntimeException("OpenAI Transcription API request failed: {$error}");
@@ -1174,8 +1165,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
 
-        curl_close($ch);
-
         if ($error !== '') {
             throw new RuntimeException("OpenAI Video API request failed: {$error}");
         }
@@ -1219,8 +1208,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-
-        curl_close($ch);
 
         if ($error !== '') {
             throw new RuntimeException("OpenAI Video API request failed: {$error}");
@@ -1266,8 +1253,6 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-
-        curl_close($ch);
 
         if ($error !== '') {
             throw new RuntimeException("OpenAI Video API request failed: {$error}");
