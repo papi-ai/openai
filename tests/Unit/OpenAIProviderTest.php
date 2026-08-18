@@ -194,6 +194,48 @@ describe('OpenAIProvider', function () {
             expect($this->provider->lastPayload['stop'])->toBe(['END']);
         });
 
+        it('uses max_completion_tokens for gpt-5 reasoning models', function () {
+            $this->provider->fakeResponse = [
+                'choices' => [
+                    [
+                        'message' => ['role' => 'assistant', 'content' => 'OK'],
+                        'finish_reason' => 'stop',
+                    ],
+                ],
+                'model' => 'gpt-5.6-luna',
+                'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 5],
+            ];
+
+            $this->provider->chat([Message::user('Hello')], [
+                'model' => 'gpt-5.6-luna',
+                'maxTokens' => 8192,
+            ]);
+
+            expect($this->provider->lastPayload['max_completion_tokens'])->toBe(8192);
+            expect($this->provider->lastPayload)->not->toHaveKey('max_tokens');
+        });
+
+        it('uses max_completion_tokens for o-series models', function () {
+            $this->provider->fakeResponse = [
+                'choices' => [
+                    [
+                        'message' => ['role' => 'assistant', 'content' => 'OK'],
+                        'finish_reason' => 'stop',
+                    ],
+                ],
+                'model' => 'o3-mini',
+                'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 5],
+            ];
+
+            $this->provider->chat([Message::user('Hello')], [
+                'model' => 'o3-mini',
+                'maxTokens' => 4096,
+            ]);
+
+            expect($this->provider->lastPayload['max_completion_tokens'])->toBe(4096);
+            expect($this->provider->lastPayload)->not->toHaveKey('max_tokens');
+        });
+
         it('includes tools in payload converted to OpenAI format', function () {
             $this->provider->fakeResponse = [
                 'choices' => [

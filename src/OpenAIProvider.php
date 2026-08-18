@@ -65,6 +65,16 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         'maximum' => 'max',
     ];
 
+    /**
+     * Model families that require max_completion_tokens instead of max_tokens.
+     * The API rejects max_tokens on reasoning models (gpt-5 / o-series).
+     * Matched by family prefix so a future gpt-5.x is covered without changes.
+     */
+    private const MAX_COMPLETION_TOKENS_PREFIXES = [
+        'gpt-5',
+        'o1', 'o3', 'o4',
+    ];
+
     public const MODEL_GPT_4_5 = 'gpt-4.5-preview';
     public const MODEL_GPT_4O = 'gpt-4o';
     public const MODEL_GPT_4O_MINI = 'gpt-4o-mini';
@@ -361,7 +371,8 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         ];
 
         if (isset($options['maxTokens'])) {
-            $payload['max_tokens'] = $options['maxTokens'];
+            $model = (string) ($options['model'] ?? $this->defaultModel);
+            $payload[$this->tokenLimitKey($model)] = $options['maxTokens'];
         }
 
         if (isset($options['temperature'])) {
@@ -413,6 +424,23 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         }
 
         return $payload;
+    }
+
+    /**
+     * Choose the request field for a token limit based on the model.
+     *
+     * Reasoning models (gpt-5 / o-series) reject max_tokens and require
+     * max_completion_tokens; the classic chat models use max_tokens.
+     */
+    private function tokenLimitKey(string $model): string
+    {
+        foreach (self::MAX_COMPLETION_TOKENS_PREFIXES as $prefix) {
+            if (stripos($model, $prefix) === 0) {
+                return 'max_completion_tokens';
+            }
+        }
+
+        return 'max_tokens';
     }
 
     /**
