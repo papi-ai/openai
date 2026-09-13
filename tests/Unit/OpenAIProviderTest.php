@@ -166,7 +166,7 @@ describe('OpenAIProvider', function () {
 
             $this->provider->chat([Message::user('Hello')]);
 
-            expect($this->provider->lastPayload['model'])->toBe('gpt-4o');
+            expect($this->provider->lastPayload['model'])->toBe('gpt-6-astra');
         });
 
         it('overrides model and options from parameters', function () {
