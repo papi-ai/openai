@@ -166,7 +166,7 @@ describe('OpenAIProvider', function () {
 
             $this->provider->chat([Message::user('Hello')]);
 
-            expect($this->provider->lastPayload['model'])->toBe('gpt-4o');
+            expect($this->provider->lastPayload['model'])->toBe('gpt-6-astra');
         });
 
         it('overrides model and options from parameters', function () {
@@ -189,9 +189,27 @@ describe('OpenAIProvider', function () {
             ]);
 
             expect($this->provider->lastPayload['model'])->toBe('gpt-4-turbo');
-            expect($this->provider->lastPayload['max_tokens'])->toBe(8192);
+            expect($this->provider->lastPayload['max_completion_tokens'])->toBe(8192);
+            expect($this->provider->lastPayload)->not->toHaveKey('max_tokens');
             expect($this->provider->lastPayload['temperature'])->toBe(0.5);
             expect($this->provider->lastPayload['stop'])->toBe(['END']);
+        });
+
+        it('sends max_completion_tokens for every model, gpt-6 and gpt-4o included', function () {
+            // max_tokens is rejected by every reasoning model and gpt-6-astra is one; the newer
+            // field is accepted everywhere, so no per-model list is needed and none can go stale.
+            foreach (['gpt-6-astra', 'gpt-4o'] as $model) {
+                $this->provider->fakeResponse = [
+                    'choices' => [['message' => ['role' => 'assistant', 'content' => 'OK'], 'finish_reason' => 'stop']],
+                    'model' => $model,
+                    'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1],
+                ];
+
+                $this->provider->chat([Message::user('Hi')], ['model' => $model, 'maxTokens' => 512]);
+
+                expect($this->provider->lastPayload['max_completion_tokens'])->toBe(512);
+                expect($this->provider->lastPayload)->not->toHaveKey('max_tokens');
+            }
         });
 
         it('uses max_completion_tokens for gpt-5 reasoning models', function () {

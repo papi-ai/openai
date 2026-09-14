@@ -16,12 +16,12 @@ use PapiAI\OpenAI\OpenAIProvider;
 
 $provider = new OpenAIProvider(
     apiKey: $_ENV['OPENAI_API_KEY'],
-    defaultModel: OpenAIProvider::MODEL_GPT_4O,
+    defaultModel: OpenAIProvider::MODEL_GPT_6_ASTRA,
 );
 
 $agent = new Agent(
     provider: $provider,
-    model: 'gpt-4o',
+    model: OpenAIProvider::MODEL_GPT_6_ASTRA,
     instructions: 'You are a helpful assistant.',
 );
 
@@ -32,11 +32,12 @@ echo $response->text;
 ## Models
 
 ```php
-OpenAIProvider::MODEL_GPT_4O        // 'gpt-4o' (default, multimodal)
-OpenAIProvider::MODEL_GPT_4O_MINI   // 'gpt-4o-mini' (fast, cost-effective)
-OpenAIProvider::MODEL_GPT_4_TURBO   // 'gpt-4-turbo' (high quality)
-OpenAIProvider::MODEL_O1_PREVIEW    // 'o1-preview' (reasoning)
-OpenAIProvider::MODEL_O1_MINI       // 'o1-mini' (fast reasoning)
+OpenAIProvider::MODEL_GPT_6_ASTRA   // 'gpt-6-astra' (default, most capable)
+OpenAIProvider::MODEL_GPT_5_6_SOL   // 'gpt-5.6-sol' (complex work)
+OpenAIProvider::MODEL_GPT_5_6_TERRA // 'gpt-5.6-terra' (balanced)
+OpenAIProvider::MODEL_GPT_5_6_LUNA  // 'gpt-5.6-luna' (cost-sensitive)
+OpenAIProvider::MODEL_GPT_4O        // 'gpt-4o' (legacy, still served)
+OpenAIProvider::MODEL_GPT_4O_MINI   // 'gpt-4o-mini' (legacy, still served)
 ```
 
 ## Capabilities

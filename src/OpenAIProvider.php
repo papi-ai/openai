@@ -65,28 +65,30 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         'maximum' => 'max',
     ];
 
-    /**
-     * Model families that require max_completion_tokens instead of max_tokens.
-     * The API rejects max_tokens on reasoning models (gpt-5 / o-series).
-     * Matched by family prefix so a future gpt-5.x is covered without changes.
-     */
-    private const MAX_COMPLETION_TOKENS_PREFIXES = [
-        'gpt-5',
-        'o1', 'o3', 'o4',
-    ];
+    public const MODEL_GPT_6_ASTRA = OpenAIModel::Gpt6Astra->value;
+    public const MODEL_GPT_5_6_SOL = OpenAIModel::Gpt56Sol->value;
+    public const MODEL_GPT_5_6_TERRA = OpenAIModel::Gpt56Terra->value;
+    public const MODEL_GPT_5_6_LUNA = OpenAIModel::Gpt56Luna->value;
+    public const MODEL_GPT_4O = OpenAIModel::Gpt4o->value;
+    public const MODEL_GPT_4O_MINI = OpenAIModel::Gpt4oMini->value;
 
-    public const MODEL_GPT_4_5 = 'gpt-4.5-preview';
-    public const MODEL_GPT_4O = 'gpt-4o';
-    public const MODEL_GPT_4O_MINI = 'gpt-4o-mini';
-    public const MODEL_GPT_4_TURBO = 'gpt-4-turbo';
-    public const MODEL_O1 = 'o1';
-    public const MODEL_O1_PREVIEW = 'o1-preview';
-    public const MODEL_O1_MINI = 'o1-mini';
-    public const MODEL_O3_MINI = 'o3-mini';
+    /** @deprecated Shuts down 23 October 2026. Use MODEL_GPT_5_6_SOL. */
+    public const MODEL_GPT_4_TURBO = OpenAIModel::Gpt4Turbo->value;
+    /** @deprecated Shuts down 23 October 2026. Use MODEL_GPT_5_6_SOL. */
+    public const MODEL_O1 = OpenAIModel::O1->value;
+    /** @deprecated Shuts down 23 October 2026. Use MODEL_GPT_5_6_SOL. */
+    public const MODEL_O3_MINI = OpenAIModel::O3Mini->value;
+    /** @deprecated Shut down 14 July 2025; requests fail. */
+    public const MODEL_GPT_4_5 = OpenAIModel::Gpt45Preview->value;
+    /** @deprecated Shut down 28 July 2025; requests fail. */
+    public const MODEL_O1_PREVIEW = OpenAIModel::O1Preview->value;
+    /** @deprecated Shut down 27 October 2025; requests fail. */
+    public const MODEL_O1_MINI = OpenAIModel::O1Mini->value;
 
-    // Sora model aliases for video generation
-    public const MODEL_SORA_2 = 'sora-2';
-    public const MODEL_SORA_2_PRO = 'sora-2-pro';
+    /** @deprecated Sora and the Videos API shut down 24 September 2026, with no successor. */
+    public const MODEL_SORA_2 = OpenAIModel::Sora2->value;
+    /** @deprecated Sora and the Videos API shut down 24 September 2026, with no successor. */
+    public const MODEL_SORA_2_PRO = OpenAIModel::Sora2Pro->value;
 
     private readonly string $baseUrl;
 
@@ -106,7 +108,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      */
     public function __construct(
         private readonly string $apiKey,
-        private readonly string $defaultModel = self::MODEL_GPT_4O,
+        private readonly string $defaultModel = self::MODEL_GPT_6_ASTRA,
         private readonly int $defaultMaxTokens = 4096,
         ?string $baseUrl = null,
         private readonly ?string $apiVersion = null,
@@ -371,8 +373,9 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         ];
 
         if (isset($options['maxTokens'])) {
-            $model = (string) ($options['model'] ?? $this->defaultModel);
-            $payload[$this->tokenLimitKey($model)] = $options['maxTokens'];
+            // max_tokens is deprecated and rejected outright by every reasoning model, gpt-6 included.
+            // max_completion_tokens is accepted by all of them, so there is nothing to decide per model.
+            $payload['max_completion_tokens'] = $options['maxTokens'];
         }
 
         if (isset($options['temperature'])) {
@@ -427,53 +430,44 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Choose the request field for a token limit based on the model.
-     *
-     * Reasoning models (gpt-5 / o-series) reject max_tokens and require
-     * max_completion_tokens; the classic chat models use max_tokens.
-     */
-    private function tokenLimitKey(string $model): string
-    {
-        foreach (self::MAX_COMPLETION_TOKENS_PREFIXES as $prefix) {
-            if (stripos($model, $prefix) === 0) {
-                return 'max_completion_tokens';
-            }
-        }
-
-        return 'max_tokens';
-    }
-
-    /**
      * The reasoning-effort levels a given model accepts.
      *
-     * The set genuinely varies, and the API rejects a level the model does not know rather than
-     * ignoring it, so a request that overshoots is a 400 and not a silent downgrade. `xhigh`
-     * arrived with the 5.1 codex generation, `max` with 5.6, and `minimal` exists only on the
-     * original GPT-5. Everything older, the o-series included, takes the three middle levels only.
-     *
-     * Decided from the model name because the API offers no way to ask.
+     * The model answers for itself when we know it. For an ID we do not, the generation is read
+     * from the name, assuming newer rather than older: `xhigh` arrived with 5.1, `max` with 5.6,
+     * and `minimal` existed only on the original GPT-5. Everything older, the o-series included,
+     * takes the three middle levels. The API rejects a level the model does not know rather than
+     * ignoring it, so overshooting is a 400 and not a silent downgrade.
      *
      * @return non-empty-list<Effort>
      */
     private function levelsFor(string $model): array
     {
-        if (!preg_match('/gpt-5(?:\.(\d+))?/i', $model, $matches)) {
-            // o-series and everything older.
+        $known = OpenAIModel::tryFrom($model)?->effortLevels() ?? [];
+
+        if ($known !== []) {
+            return $known;
+        }
+
+        if (!preg_match('/gpt-(\d+)(?:\.(\d+))?/i', $model, $matches)) {
             return [Effort::Low, Effort::Medium, Effort::High];
         }
 
-        $minor = isset($matches[1]) ? (int) $matches[1] : 0;
+        $major = (int) $matches[1];
+        $minor = isset($matches[2]) ? (int) $matches[2] : 0;
 
-        if ($minor >= 6) {
+        if ($major >= 6 || ($major === 5 && $minor >= 6)) {
             return [Effort::None, Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh, Effort::Maximum];
         }
 
-        if ($minor >= 1) {
+        if ($major === 5 && $minor >= 1) {
             return [Effort::None, Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh];
         }
 
-        // The original GPT-5 is the only model that took "minimal", and it has no xhigh.
-        return [Effort::Minimal, Effort::Low, Effort::Medium, Effort::High];
+        if ($major === 5) {
+            return [Effort::Minimal, Effort::Low, Effort::Medium, Effort::High];
+        }
+
+        return [Effort::Low, Effort::Medium, Effort::High];
     }
 
     /**

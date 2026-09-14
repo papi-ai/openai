@@ -71,6 +71,8 @@ describe('OpenAIProvider reasoning effort', function () {
         $cases = [
             // model, asked for, expected
             ['gpt-5.6-sol', 'maximum', 'max'],
+            ['gpt-6-astra', 'maximum', 'max'],   // GPT-6 keeps the full scale
+            ['gpt-6.2-nova', 'maximum', 'max'],  // and so does anything newer we have not shipped
             ['gpt-5.5', 'maximum', 'xhigh'],       // no max before 5.6
             ['gpt-5', 'maximum', 'high'],          // no xhigh on the original GPT-5
             ['o3-mini', 'maximum', 'high'],        // o-series tops out at high
