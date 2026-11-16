@@ -497,7 +497,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
                     'type' => 'function_call',
                     'call_id' => $toolCall->id,
                     'name' => $toolCall->name,
-                    'arguments' => json_encode($toolCall->arguments),
+                    'arguments' => $toolCall->argumentsAsJson(),
                 ];
             }
 
