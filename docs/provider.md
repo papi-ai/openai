@@ -85,6 +85,26 @@ $transcription = $provider->transcribe('/path/to/audio.mp3', [
 echo $transcription->text;
 ```
 
+## Creating It by Name
+
+An application that picks its provider from configuration can build this one without naming
+its class:
+
+```php
+use PapiAI\Core\Factory\ComposerDiscovery;
+use PapiAI\Core\Factory\ProviderRegistry;
+
+$registry = new ProviderRegistry(new ComposerDiscovery());
+
+$provider = $registry->create('openai', [
+    'api_key' => $_ENV['OPENAI_API_KEY'],
+]);
+```
+
+It takes `api_key` (required), `model`, `max_tokens`, `base_url`, `api_version` and `effort`.
+Anything it is not given falls back to the constructor's defaults, and a missing or unknown setting
+throws `ConfigurationException` before any request is made.
+
 ## Requirements
 
 - PHP 8.2+
