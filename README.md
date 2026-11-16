@@ -35,12 +35,23 @@ echo $response->text;
 
 ```php
 OpenAIProvider::MODEL_GPT_6_ASTRA   // 'gpt-6-astra' (default, most capable)
+OpenAIProvider::MODEL_GPT_6_1_SOL   // 'gpt-6.1-sol'
+OpenAIProvider::MODEL_GPT_6_1_TERRA // 'gpt-6.1-terra'
+OpenAIProvider::MODEL_GPT_6_SOL     // 'gpt-6-sol'
+OpenAIProvider::MODEL_GPT_6_LUNA    // 'gpt-6-luna'
 OpenAIProvider::MODEL_GPT_5_6_SOL   // 'gpt-5.6-sol' (complex work)
 OpenAIProvider::MODEL_GPT_5_6_TERRA // 'gpt-5.6-terra' (balanced)
 OpenAIProvider::MODEL_GPT_5_6_LUNA  // 'gpt-5.6-luna' (cost-sensitive)
 OpenAIProvider::MODEL_GPT_4O        // 'gpt-4o' (legacy, still served)
 OpenAIProvider::MODEL_GPT_4O_MINI   // 'gpt-4o-mini' (legacy, still served)
 ```
+
+## Endpoint
+
+Chat, streaming and tool calling go through the Responses API (`POST /responses`). Tools are
+declared flat, the system message travels as `instructions`, structured output under
+`text.format`, and effort under `reasoning.effort`. Each request carries the full conversation
+(`store: false`); nothing is kept on OpenAI's side between turns.
 
 ## Features
 

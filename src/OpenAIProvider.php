@@ -69,6 +69,10 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     public const MODEL_GPT_5_6_SOL = OpenAIModel::Gpt56Sol->value;
     public const MODEL_GPT_5_6_TERRA = OpenAIModel::Gpt56Terra->value;
     public const MODEL_GPT_5_6_LUNA = OpenAIModel::Gpt56Luna->value;
+    public const MODEL_GPT_6_1_SOL = OpenAIModel::Gpt61Sol->value;
+    public const MODEL_GPT_6_1_TERRA = OpenAIModel::Gpt61Terra->value;
+    public const MODEL_GPT_6_SOL = OpenAIModel::Gpt6Sol->value;
+    public const MODEL_GPT_6_LUNA = OpenAIModel::Gpt6Luna->value;
     public const MODEL_GPT_4O = OpenAIModel::Gpt4o->value;
     public const MODEL_GPT_4O_MINI = OpenAIModel::Gpt4oMini->value;
 
@@ -118,15 +122,10 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Send a chat completion request to OpenAI.
-     *
-     * Converts PapiAI Messages to OpenAI's message format, sends the request,
-     * and wraps the response in a core Response object.
+     * Send a conversation to the Responses API and return the model's turn.
      *
      * @param Message[] $messages Conversation history
-     * @param array     $options  Provider options (model, maxTokens, temperature, tools, outputSchema, etc.)
-     *
-     * @return Response The parsed completion response
+     * @param array     $options  Provider options (model, maxTokens, temperature, tools, toolChoice, effort, outputSchema)
      *
      * @throws ProviderException       When the API returns an error
      * @throws AuthenticationException When the API key is invalid
@@ -135,17 +134,13 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     #[\Override]
     public function chat(array $messages, array $options = []): Response
     {
-        $payload = $this->buildPayload($messages, $options);
-        $response = $this->request($payload);
+        $response = $this->request($this->buildPayload($messages, $options));
 
-        return Response::fromOpenAI($response, $messages);
+        return $this->parseResponse($response, $messages);
     }
 
     /**
-     * Stream a chat completion response from OpenAI.
-     *
-     * Yields StreamChunk objects as server-sent events arrive, with the final
-     * chunk marked as complete via its isComplete flag.
+     * Stream a response, yielding text deltas and a final completion marker.
      *
      * @param Message[] $messages Conversation history
      * @param array     $options  Provider options (model, maxTokens, temperature, tools, etc.)
@@ -163,11 +158,13 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         $payload['stream'] = true;
 
         foreach ($this->streamRequest($payload) as $event) {
-            $delta = $event['choices'][0]['delta'] ?? [];
-            if (isset($delta['content'])) {
-                yield new StreamChunk($delta['content']);
+            $type = $event['type'] ?? '';
+
+            if ($type === 'response.output_text.delta') {
+                yield new StreamChunk((string) ($event['delta'] ?? ''));
             }
-            if (($event['choices'][0]['finish_reason'] ?? null) !== null) {
+
+            if (in_array($type, ['response.completed', 'response.incomplete', 'response.failed'], true)) {
                 yield new StreamChunk('', isComplete: true);
             }
         }
@@ -198,7 +195,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     /**
      * Indicate that this provider supports structured JSON output via json_schema.
      *
-     * @return bool Always true — OpenAI supports response_format with json_schema
+     * @return bool Always true — OpenAI accepts a JSON schema under text.format
      */
     #[\Override]
     public function supportsStructuredOutput(): bool
@@ -355,78 +352,224 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Build the API request payload.
+     * Build the Responses API request body.
+     *
+     * Every request goes to /responses: Chat Completions does not support function calling on
+     * current models. The history is sent in full each time (`store: false`); papi owns the
+     * transcript, the server does not.
      */
     private function buildPayload(array $messages, array $options): array
     {
-        $apiMessages = [];
+        $model = (string) ($options['model'] ?? $this->defaultModel);
+        [$instructions, $input] = $this->splitConversation($messages);
+
+        $payload = ['model' => $model, 'input' => $input, 'store' => false];
+
+        if ($instructions !== null) {
+            $payload['instructions'] = $instructions;
+        }
+
+        return $payload + $this->generationSettings($model, $options);
+    }
+
+    /**
+     * The system message, which Responses takes as `instructions`, and everything else as items.
+     *
+     * @param Message[] $messages
+     *
+     * @return array{0: string|null, 1: list<array<string, mixed>>}
+     */
+    private function splitConversation(array $messages): array
+    {
+        $instructions = null;
+        $input = [];
 
         foreach ($messages as $message) {
-            if ($message instanceof Message) {
-                $apiMessages[] = $this->convertMessage($message);
+            if (!$message instanceof Message) {
+                continue;
+            }
+
+            if ($message->isSystem()) {
+                $instructions = $message->getText();
+
+                continue;
+            }
+
+            foreach ($this->toInputItems($message) as $item) {
+                $input[] = $item;
             }
         }
 
-        $payload = [
-            'model' => $options['model'] ?? $this->defaultModel,
-            'messages' => $apiMessages,
-        ];
+        return [$instructions, $input];
+    }
+
+    /**
+     * The optional request fields: output ceiling, sampling, schema, tools, forced choice, effort.
+     *
+     * @return array<string, mixed>
+     */
+    private function generationSettings(string $model, array $options): array
+    {
+        $settings = [];
 
         if (isset($options['maxTokens'])) {
-            // max_tokens is deprecated and rejected outright by every reasoning model, gpt-6 included.
-            // max_completion_tokens is accepted by all of them, so there is nothing to decide per model.
-            $payload['max_completion_tokens'] = $options['maxTokens'];
+            $settings['max_output_tokens'] = $options['maxTokens'];
         }
 
         if (isset($options['temperature'])) {
-            $payload['temperature'] = $options['temperature'];
+            $settings['temperature'] = $options['temperature'];
         }
 
-        if (isset($options['stopSequences'])) {
-            $payload['stop'] = $options['stopSequences'];
-        }
-
-        // Handle structured output / JSON mode
         if (isset($options['outputSchema'])) {
-            $payload['response_format'] = [
-                'type' => 'json_schema',
-                'json_schema' => [
-                    'name' => 'response',
-                    'schema' => $options['outputSchema'],
-                ],
-            ];
+            $settings['text'] = ['format' => ['type' => 'json_schema', 'name' => 'response', 'schema' => $options['outputSchema']]];
         }
 
-        // Handle tools
-        if (isset($options['tools']) && !empty($options['tools'])) {
-            $payload['tools'] = $this->convertTools($options['tools']);
+        if (!empty($options['tools'])) {
+            $settings['tools'] = $this->convertTools($options['tools']);
         }
 
-        // Forced tool choice. Validation lives in core and throws before any HTTP call.
+        // Validation lives in core and throws before any HTTP call, tools or no tools.
         if (isset($options['toolChoice'])) {
             $choice = ToolChoice::fromOption($options['toolChoice'], $options['tools'] ?? []);
 
             if (!empty($options['tools'])) {
-                $payload['tool_choice'] = $choice->toolName !== null
-                    ? ['type' => 'function', 'function' => ['name' => $choice->toolName]]
-                    : match ($choice->mode) {
-                        ToolChoice::NONE => 'none',
-                        ToolChoice::REQUIRED => 'required',
-                        default => 'auto',
-                    };
+                $settings['tool_choice'] = $this->toolChoiceFor($choice);
             }
         }
 
         $effort = $this->effortFor($options);
 
         if ($effort !== null) {
-            $model = (string) ($options['model'] ?? $this->defaultModel);
             $narrowed = $effort->nearestOf($this->levelsFor($model));
-
-            $payload['reasoning_effort'] = self::NATIVE_EFFORT[$narrowed->value] ?? $narrowed->value;
+            $settings['reasoning'] = ['effort' => self::NATIVE_EFFORT[$narrowed->value] ?? $narrowed->value];
         }
 
-        return $payload;
+        return $settings;
+    }
+
+    /**
+     * Responses spells a named tool flat, and the modes as bare strings.
+     *
+     * @return array{type: string, name: string}|string
+     */
+    private function toolChoiceFor(ToolChoice $choice): array|string
+    {
+        if ($choice->toolName !== null) {
+            return ['type' => 'function', 'name' => $choice->toolName];
+        }
+
+        return match ($choice->mode) {
+            ToolChoice::NONE => 'none',
+            ToolChoice::REQUIRED => 'required',
+            default => 'auto',
+        };
+    }
+
+    /**
+     * Translate one PapiAI message into Responses input items.
+     *
+     * A plain user or assistant turn is one message item. An assistant turn that called tools
+     * is its text (if any) followed by one function_call item per call; a tool result is a
+     * function_call_output item. The API keys everything by call_id, which is the ToolCall id.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function toInputItems(Message $message): array
+    {
+        if ($message->isTool()) {
+            return [[
+                'type' => 'function_call_output',
+                'call_id' => $message->toolCallId,
+                'output' => is_string($message->content) ? $message->content : json_encode($message->content),
+            ]];
+        }
+
+        if ($message->hasToolCalls()) {
+            $items = [];
+
+            if ($message->getText() !== '') {
+                $items[] = ['role' => 'assistant', 'content' => [['type' => 'output_text', 'text' => $message->getText()]]];
+            }
+
+            foreach ($message->toolCalls as $toolCall) {
+                $items[] = [
+                    'type' => 'function_call',
+                    'call_id' => $toolCall->id,
+                    'name' => $toolCall->name,
+                    'arguments' => json_encode($toolCall->arguments),
+                ];
+            }
+
+            return $items;
+        }
+
+        if (is_array($message->content)) {
+            return [['role' => $this->convertRole($message->role), 'content' => $this->convertMultimodalContent($message->content)]];
+        }
+
+        if ($message->role === Role::Assistant) {
+            return [['role' => 'assistant', 'content' => [['type' => 'output_text', 'text' => $message->content]]]];
+        }
+
+        return [['role' => $this->convertRole($message->role), 'content' => $message->content]];
+    }
+
+    /**
+     * Read the model's turn out of a Responses body.
+     *
+     * Text lives in message items, calls in function_call items, and reasoning items are the
+     * model's own notes, so they are skipped. Usage already uses input_tokens/output_tokens.
+     *
+     * @param array<string, mixed> $response The decoded body
+     * @param Message[]            $messages The conversation this answers
+     */
+    private function parseResponse(array $response, array $messages): Response
+    {
+        $text = '';
+        $toolCalls = [];
+
+        foreach ($response['output'] ?? [] as $item) {
+            $type = $item['type'] ?? '';
+
+            if ($type === 'message') {
+                foreach ($item['content'] ?? [] as $part) {
+                    if (($part['type'] ?? '') === 'output_text') {
+                        $text .= $part['text'] ?? '';
+                    }
+                }
+            }
+
+            if ($type === 'function_call') {
+                $toolCalls[] = new ToolCall(
+                    id: (string) ($item['call_id'] ?? $item['id'] ?? ''),
+                    name: (string) ($item['name'] ?? ''),
+                    arguments: json_decode((string) ($item['arguments'] ?? '{}'), true) ?? [],
+                );
+            }
+        }
+
+        return new Response(
+            text: $text,
+            toolCalls: $toolCalls,
+            messages: $messages,
+            usage: $response['usage'] ?? [],
+            stopReason: $this->stopReasonOf($response, $toolCalls !== []),
+        );
+    }
+
+    /**
+     * The reason the model stopped, in the vocabulary callers already match on.
+     *
+     * A completed turn is "stop", or "tool_calls" when it asked for tools; an incomplete turn
+     * reports the API's own reason, such as "max_output_tokens".
+     */
+    private function stopReasonOf(array $response, bool $calledTools): string
+    {
+        if (($response['status'] ?? 'completed') === 'incomplete') {
+            return (string) ($response['incomplete_details']['reason'] ?? 'incomplete');
+        }
+
+        return $calledTools ? 'tool_calls' : 'stop';
     }
 
     /**
@@ -489,41 +632,11 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
     }
 
     /**
-     * Convert a Message to OpenAI API format.
-     */
-    private function convertMessage(Message $message): array
-    {
-        $apiMessage = [
-            'role' => $this->convertRole($message->role),
-        ];
-
-        if ($message->isTool()) {
-            $apiMessage['role'] = 'tool';
-            $apiMessage['content'] = $message->content;
-            $apiMessage['tool_call_id'] = $message->toolCallId;
-        } elseif ($message->hasToolCalls()) {
-            $apiMessage['content'] = $message->getText() ?: null;
-            $apiMessage['tool_calls'] = array_map(function (ToolCall $tc) {
-                return [
-                    'id' => $tc->id,
-                    'type' => 'function',
-                    'function' => [
-                        'name' => $tc->name,
-                        'arguments' => json_encode($tc->arguments),
-                    ],
-                ];
-            }, $message->toolCalls);
-        } elseif (is_array($message->content)) {
-            $apiMessage['content'] = $this->convertMultimodalContent($message->content);
-        } else {
-            $apiMessage['content'] = $message->content;
-        }
-
-        return $apiMessage;
-    }
-
-    /**
-     * Convert multimodal content to OpenAI format.
+     * Convert multimodal parts to Responses input parts. A base64 image travels as a data URL.
+     *
+     * @param array<array{type: string, text?: string, source?: array}> $content
+     *
+     * @return list<array<string, string>>
      */
     private function convertMultimodalContent(array $content): array
     {
@@ -531,49 +644,50 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
 
         foreach ($content as $part) {
             if ($part['type'] === 'text') {
-                $parts[] = ['type' => 'text', 'text' => $part['text']];
-            } elseif ($part['type'] === 'image') {
-                $source = $part['source'];
-                if ($source['type'] === 'url') {
-                    $parts[] = [
-                        'type' => 'image_url',
-                        'image_url' => ['url' => $source['url']],
-                    ];
-                } else {
-                    $parts[] = [
-                        'type' => 'image_url',
-                        'image_url' => [
-                            'url' => "data:{$source['media_type']};base64,{$source['data']}",
-                        ],
-                    ];
-                }
+                $parts[] = ['type' => 'input_text', 'text' => $part['text']];
+
+                continue;
             }
+
+            if ($part['type'] !== 'image') {
+                continue;
+            }
+
+            $source = $part['source'];
+            $parts[] = [
+                'type' => 'input_image',
+                'image_url' => $source['type'] === 'url'
+                    ? $source['url']
+                    : sprintf('data:%s;base64,%s', $source['media_type'], $source['data']),
+            ];
         }
 
         return $parts;
     }
 
     /**
-     * Convert tools from PapiAI format to OpenAI format.
+     * Convert PapiAI tool definitions to the flat Responses tool shape.
+     *
+     * @param array<array{name: string, description: string, input_schema?: array, parameters?: array}> $tools
+     *
+     * @return list<array{type: string, name: string, description: string, parameters: array}>
      */
     private function convertTools(array $tools): array
     {
-        $openaiTools = [];
+        $declared = [];
 
         foreach ($tools as $tool) {
             if (is_array($tool)) {
-                $openaiTools[] = [
+                $declared[] = [
                     'type' => 'function',
-                    'function' => [
-                        'name' => $tool['name'],
-                        'description' => $tool['description'],
-                        'parameters' => $tool['input_schema'] ?? $tool['parameters'] ?? ['type' => 'object', 'properties' => []],
-                    ],
+                    'name' => $tool['name'],
+                    'description' => $tool['description'],
+                    'parameters' => $tool['input_schema'] ?? $tool['parameters'] ?? ['type' => 'object', 'properties' => []],
                 ];
             }
         }
 
-        return $openaiTools;
+        return $declared;
     }
 
     /**
@@ -701,9 +815,17 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      *
      * @codeCoverageIgnore
      */
+    /**
+     * The path chat and streaming post to. Protected so a test double can observe it.
+     */
+    protected function chatPath(): string
+    {
+        return '/responses';
+    }
+
     protected function request(array $payload): array
     {
-        $url = $this->buildUrl('/chat/completions');
+        $url = $this->buildUrl($this->chatPath());
         $ch = curl_init($url);
 
         $rawHeaders = '';
@@ -806,7 +928,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
      */
     protected function streamRequest(array $payload): Generator
     {
-        $url = $this->buildUrl('/chat/completions');
+        $url = $this->buildUrl($this->chatPath());
         $ch = curl_init($url);
 
         $buffer = '';

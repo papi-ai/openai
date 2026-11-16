@@ -41,14 +41,14 @@ describe('OpenAIProvider reasoning effort', function () {
         foreach (['low', 'medium', 'high'] as $level) {
             ($this->chat)(['effort' => $level]);
 
-            expect($this->provider->lastPayload['reasoning_effort'])->toBe($level);
+            expect($this->provider->lastPayload['reasoning']['effort'])->toBe($level);
         }
     });
 
     it('sends nothing when the caller does not ask', function () {
         ($this->chat)([]);
 
-        expect($this->provider->lastPayload)->not->toHaveKey('reasoning_effort');
+        expect($this->provider->lastPayload)->not->toHaveKey('reasoning');
     });
 
     it('rejects a level it does not recognise, before any HTTP call', function () {
@@ -60,10 +60,10 @@ describe('OpenAIProvider reasoning effort', function () {
 
     it('uses OpenAI\'s own spellings for the top two levels', function () {
         ($this->chat)(['effort' => 'extra-high', 'model' => 'gpt-5.6-terra']);
-        expect($this->provider->lastPayload['reasoning_effort'])->toBe('xhigh');
+        expect($this->provider->lastPayload['reasoning']['effort'])->toBe('xhigh');
 
         ($this->chat)(['effort' => 'maximum', 'model' => 'gpt-5.6-terra']);
-        expect($this->provider->lastPayload['reasoning_effort'])->toBe('max');
+        expect($this->provider->lastPayload['reasoning']['effort'])->toBe('max');
     });
 
     it('narrows to what the target model actually accepts', function () {
@@ -84,7 +84,7 @@ describe('OpenAIProvider reasoning effort', function () {
         foreach ($cases as [$model, $asked, $expected]) {
             ($this->chat)(['effort' => $asked, 'model' => $model]);
 
-            expect($this->provider->lastPayload['reasoning_effort'])
+            expect($this->provider->lastPayload['reasoning']['effort'])
                 ->toBe($expected, sprintf('%s asked for %s', $model, $asked));
         }
     });
@@ -93,13 +93,13 @@ describe('OpenAIProvider reasoning effort', function () {
         $provider = new TestableOpenAIEffortProvider('k', 'gpt-5', 4096, null, null, Effort::Minimal);
         $provider->chat([Message::user('hi')], []);
 
-        expect($provider->lastPayload['reasoning_effort'])->toBe('minimal');
+        expect($provider->lastPayload['reasoning']['effort'])->toBe('minimal');
     });
 
     it('lets the call override the provider default', function () {
         $provider = new TestableOpenAIEffortProvider('k', 'gpt-4o', 4096, null, null, Effort::Minimal);
         $provider->chat([Message::user('hi')], ['effort' => 'high']);
 
-        expect($provider->lastPayload['reasoning_effort'])->toBe('high');
+        expect($provider->lastPayload['reasoning']['effort'])->toBe('high');
     });
 });
