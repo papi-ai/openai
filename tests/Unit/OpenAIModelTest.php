@@ -66,6 +66,12 @@ describe('OpenAIModel', function () {
             expect(OpenAIModel::Gpt56Luna->effortLevels())->toBe($full);
         });
 
+        it('drops none and minimal on the 6.1 tier, which rejects both', function () {
+            expect(OpenAIModel::Gpt61Sol->effortLevels())->not->toContain(Effort::None);
+            expect(OpenAIModel::Gpt61Sol->effortLevels())->toContain(Effort::Maximum);
+            expect(OpenAIModel::Gpt6Luna->effortLevels())->toContain(Effort::None);
+        });
+
         it('offers the three middle levels on the o-series and 4o', function () {
             expect(OpenAIModel::O3Mini->effortLevels())->toBe([Effort::Low, Effort::Medium, Effort::High]);
             expect(OpenAIModel::Gpt4o->effortLevels())->toBe([Effort::Low, Effort::Medium, Effort::High]);

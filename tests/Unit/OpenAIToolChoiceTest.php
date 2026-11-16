@@ -58,10 +58,10 @@ describe('OpenAIProvider tool choice', function () {
         expect($this->provider->lastPayload['tool_choice'])->toBe('required');
     });
 
-    it('maps a specific tool to {type: function, function: {name}}', function () {
+    it('maps a specific tool to {type: function, name}', function () {
         $this->provider->chat([Message::user('hi')], ['tools' => $this->tools, 'toolChoice' => ['name' => 'get_weather']]);
 
-        expect($this->provider->lastPayload['tool_choice'])->toBe(['type' => 'function', 'function' => ['name' => 'get_weather']]);
+        expect($this->provider->lastPayload['tool_choice'])->toBe(['type' => 'function', 'name' => 'get_weather']);
     });
 
     it('emits no tool_choice when absent (backward compatible)', function () {

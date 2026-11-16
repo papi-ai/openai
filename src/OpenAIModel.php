@@ -34,6 +34,10 @@ use PapiAI\Core\Effort;
 enum OpenAIModel: string
 {
     case Gpt6Astra = 'gpt-6-astra';
+    case Gpt61Sol = 'gpt-6.1-sol';
+    case Gpt61Terra = 'gpt-6.1-terra';
+    case Gpt6Sol = 'gpt-6-sol';
+    case Gpt6Luna = 'gpt-6-luna';
     case Gpt56Sol = 'gpt-5.6-sol';
     case Gpt56Terra = 'gpt-5.6-terra';
     case Gpt56Luna = 'gpt-5.6-luna';
@@ -73,8 +77,10 @@ enum OpenAIModel: string
     public function effortLevels(): array
     {
         return match ($this) {
-            self::Gpt6Astra, self::Gpt56Sol, self::Gpt56Terra, self::Gpt56Luna
+            self::Gpt6Astra, self::Gpt6Sol, self::Gpt6Luna, self::Gpt56Sol, self::Gpt56Terra, self::Gpt56Luna
                 => [Effort::None, Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh, Effort::Maximum],
+            self::Gpt61Sol, self::Gpt61Terra
+                => [Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh, Effort::Maximum],
             self::Sora2, self::Sora2Pro => [],
             default => [Effort::Low, Effort::Medium, Effort::High],
         };
