@@ -95,24 +95,24 @@ describe('OpenAIProvider on the Responses API', function () {
 
         it('declares tools flat, without the function wrapper Chat Completions used', function () {
             ($this->chat)([Message::user('Hi')], ['tools' => [
-                ['name' => 'get_weather', 'description' => 'Weather', 'parameters' => ['type' => 'object', 'properties' => []]],
+                ['name' => 'get_weather', 'description' => 'Weather', 'parameters' => ['type' => 'object', 'properties' => ['city' => ['type' => 'string']]]],
             ]]);
 
             expect($this->provider->lastPayload['tools'])->toBe([[
                 'type' => 'function',
                 'name' => 'get_weather',
                 'description' => 'Weather',
-                'parameters' => ['type' => 'object', 'properties' => []],
+                'parameters' => ['type' => 'object', 'properties' => ['city' => ['type' => 'string']]],
             ]]);
         });
 
         it('puts a JSON schema under text.format', function () {
-            ($this->chat)([Message::user('Hi')], ['outputSchema' => ['type' => 'object', 'properties' => []]]);
+            ($this->chat)([Message::user('Hi')], ['outputSchema' => ['type' => 'object', 'properties' => ['city' => ['type' => 'string']]]]);
 
             expect($this->provider->lastPayload['text']['format'])->toBe([
                 'type' => 'json_schema',
                 'name' => 'response',
-                'schema' => ['type' => 'object', 'properties' => []],
+                'schema' => ['type' => 'object', 'properties' => ['city' => ['type' => 'string']]],
             ]);
             expect($this->provider->lastPayload)->not->toHaveKey('response_format');
         });

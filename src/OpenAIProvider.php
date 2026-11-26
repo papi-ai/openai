@@ -32,6 +32,7 @@ use PapiAI\Core\JobStatus;
 use PapiAI\Core\Message;
 use PapiAI\Core\Response;
 use PapiAI\Core\Role;
+use PapiAI\Core\Schema\WireSchema;
 use PapiAI\Core\StopReason;
 use PapiAI\Core\StreamChunk;
 use PapiAI\Core\ToolCall;
@@ -422,7 +423,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         }
 
         if (isset($options['outputSchema'])) {
-            $settings['text'] = ['format' => ['type' => 'json_schema', 'name' => 'response', 'schema' => $options['outputSchema']]];
+            $settings['text'] = ['format' => ['type' => 'json_schema', 'name' => 'response', 'schema' => (new WireSchema($options['outputSchema']))->toArray()]];
         }
 
         if (!empty($options['tools'])) {
@@ -684,7 +685,7 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
                     'type' => 'function',
                     'name' => $tool['name'],
                     'description' => $tool['description'],
-                    'parameters' => $tool['input_schema'] ?? $tool['parameters'] ?? ['type' => 'object', 'properties' => []],
+                    'parameters' => (new WireSchema($tool['input_schema'] ?? $tool['parameters'] ?? ['type' => 'object']))->toArray(),
                 ];
             }
         }
