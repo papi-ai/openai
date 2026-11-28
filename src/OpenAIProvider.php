@@ -956,26 +956,44 @@ class OpenAIProvider implements ProviderInterface, EmbeddingProviderInterface, T
         ]);
 
         curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-        if ($httpCode >= 400) {
-            $data = json_decode($buffer, true);
-            $this->handleErrorResponse($httpCode, $data, $this->parseResponseHeaders($rawHeaders));
+        yield from $this->eventsIn((int) curl_getinfo($ch, CURLINFO_HTTP_CODE), curl_error($ch), $buffer, $rawHeaders);
+    }
+
+    /**
+     * The events of a streamed response, or the failure that came in their place: a request
+     * that never reached the API, or one it refused.
+     *
+     * @return Generator<int, array<array-key, mixed>>
+     */
+    protected function eventsIn(int $httpCode, string $transportError, string $body, string $rawHeaders = ''): Generator
+    {
+        if ($transportError !== '') {
+            throw new RuntimeException("OpenAI API request failed: {$transportError}");
         }
 
-        // Parse SSE events
-        $lines = explode("\n", $buffer);
-        foreach ($lines as $line) {
+        if ($httpCode >= 400) {
+            $refusal = json_decode($body, true);
+            $this->handleErrorResponse($httpCode, is_array($refusal) ? $refusal : null, $this->parseResponseHeaders($rawHeaders));
+        }
+
+        foreach (explode("\n", $body) as $line) {
             $line = trim($line);
-            if (str_starts_with($line, 'data: ')) {
-                $json = substr($line, 6);
-                if ($json === '[DONE]') {
-                    break;
-                }
-                $event = json_decode($json, true);
-                if ($event !== null) {
-                    yield $event;
-                }
+
+            if (!str_starts_with($line, 'data: ')) {
+                continue;
+            }
+
+            $json = substr($line, 6);
+
+            if ($json === '[DONE]') {
+                break;
+            }
+
+            $event = json_decode($json, true);
+
+            if (is_array($event)) {
+                yield $event;
             }
         }
     }
